@@ -1,0 +1,1 @@
+20210930 분석환경(eda.txt), 개발환경(develop.txt) python 3.8버전.

@@ -2,6 +2,7 @@ import streamlit as st
 from datetime import datetime 
 import pandas as pd
 import numpy as np
+import re
 
 import matplotlib.pyplot as plt
 from matplotlib import font_manager, rc
@@ -9,8 +10,27 @@ font_path = "malgun.ttf"
 font = font_manager.FontProperties(fname=font_path).get_name()
 rc('font', family=font)
 
+from sklearn.preprocessing import LabelEncoder
+import requests
+from bs4 import BeautifulSoup
+
+def daysbin(x):
+    if x<10:
+        return 0
+    elif x<20:
+        return 1
+    else:
+        return 2
+        
 data=pd.read_csv('accalldata.csv')
 school=pd.read_csv('schoolzone.csv',encoding='cp949')
+breakrule=pd.read_csv('breakrule.csv')
+manyaccident=pd.read_csv('manyaccident.csv')
+
+breakrule.columns=['lat','lon']
+manyaccident.columns=['lat','lon']
+
+mapdata=pd.concat([breakrule,manyaccident])
 
 school.loc[4,'위도']=37.530017
 school.loc[43,'경도']=127.073328
@@ -52,73 +72,131 @@ data2=data_copy2
 data2=data2[data2['schoolzone']==1]
 
 train=data2.iloc[:,np.r_[1,2,3,4,6,7,8,9,10,-2,-6]]
+
+traindata=train.copy()
 ## 1 : 차대사람 2 : 차대차 3 : 차량단독
 ## 1 : 주간 2 : 야간
+train['일_bin']=train['일'].apply(lambda x:daysbin(x))
 
+le=LabelEncoder()
+
+target=traindata['사고유형대분류']
+traindata.drop('사고유형대분류',axis=1,inplace=True)
+
+traindata['지역'] = le.fit_transform(traindata['지역'])
+
+from sklearn.ensemble import RandomForestClassifier
+
+model = RandomForestClassifier(n_estimators=10)
+model.fit(traindata, target)
 
 def main():
-    today=datetime.today().strftime('%Y-%m-%d')
-    year=today.split('-')[0]
-    month=today.split('-')[1]
-    day=today.split('-')[2] 
-    st.title("어린이 보호구역 교통사고 주의 대쉬보드")
+    today=datetime.today()
+    todaytime=today.strftime('%Y-%m-%d-%H')
+    year=int(todaytime.split('-')[0])
+    month=int(todaytime.split('-')[1])
+    day=int(todaytime.split('-')[2])
+    hour=int(todaytime.split('-')[3])
+    weekday=today.weekday()
+    m={0:2,1:3,2:4,3:5,4:6,5:7,6:1}
+    weekday=m[weekday]
+
+    st.title("스쿨존 교통사고 주의 대쉬보드")
     st.write(f"""
     {year}년 {month}월 {day}일
     """)
 
-    kpi1,kpi2=st.beta_columns(2)
+    my_page = st.sidebar.radio('Page Navigation', ['데이터 분석 및 시각화', '교통사고 예측 확률 결과 분석'])
+    
+    if my_page=='데이터 분석 및 시각화':
+        kpi1,kpi2=st.columns(2)
 
-    with kpi1:
-        st.markdown("<h2 style='text-align:center'>최다사고유형</h2>",unsafe_allow_html=True)
-        ## 11월 어떤 사고가 많이 일어나는지.
-        df=train.groupby(['월','사고유형대분류'])['사고유형대분류'].count()
-        top_acc=df.loc[11].idxmax()
-        count=df.loc[11][top_acc]
-        kind={1:'차대사람',2:'차대차',3:'차량단독'}
-        st.markdown(f"<h2 style='text-align:center;color:red'>{kind[top_acc]}</h2>",unsafe_allow_html=True)
-        st.markdown(f"<h3 style='text-align:center;'>{count}회</h3>",unsafe_allow_html=True)
-        # else:
-        #     st.markdown(f"<h2 style='text-align:center;color:green'>▼ {newcase}</h2>",unsafe_allow_html=True)
-    # with kpi2:
-    #     st.markdown("<h2 style='text-align:center'>누적 확진자 수</h2>",unsafe_allow_html=True)
-    #     totalCase=int(result[1].replace(',',''))
-    #     st.markdown(f"<h2 style='text-align:center;'>{totalCase}</h2>",unsafe_allow_html=True)
-    # with kpi3:
-    #     st.markdown("<h2 style='text-align:center'>완치자 수</h2>",unsafe_allow_html=True)
-    #     recovered=int(result[2].replace(',',''))
-    #     if recovered>0:
-    #         st.markdown(f"<h2 style='text-align:center;color:red'>{recovered}</h2>",unsafe_allow_html=True)
-    #     else:
-    #         st.markdown(f"<h2 style='text-align:center;color:green'>{recovered}</h2>",unsafe_allow_html=True)
+        with kpi1:
+            st.markdown("<h3 style='text-align:center'>최다사고유형</h3>",unsafe_allow_html=True)
+            ## {month}월 어떤 사고가 많이 일어나는지.
+            df=train.groupby(['월','사고유형대분류'])['사고유형대분류'].count()
+            top_acc=df.loc[month].idxmax()
+            count=df.loc[month][top_acc]
+            kind={1:'차대사람',2:'차대차',3:'차량단독'}
+            st.markdown(f"<h4 style='text-align:center;color:red'>{kind[top_acc]} <span style='color:rgb(49, 51, 63);'>{count}회</span></h4>",unsafe_allow_html=True)
+        with kpi2:
+            st.markdown("<h3 style='text-align:center'>최다사고시간</h3>",unsafe_allow_html=True)
+            ## 11월 주야구분 
+            df_juya=train.groupby(['월','주야구분'])['사고유형대분류'].count()
+            top_accj=df_juya.loc[month].idxmax()
+            kind={1:'주간',2:'야간'}
+            countj=df_juya.loc[month][top_acc]
+            ## 11월 몇시에 사고가 가장 많이 나는지.
+            df=train.groupby(['월','시간'])['사고유형대분류'].count()
+            top_acc_time=df.loc[month].idxmax()
+            count=df.loc[month][top_acc]
+            st.markdown(f"<h4 style='text-align:center;color:red'>{kind[top_accj]} <span style='color:rgb(49, 51, 63);'>과 {top_acc_time}시</span></h4>",unsafe_allow_html=True)
+            st.markdown(f"<span style='font-size:4px;'>*24시기준</span>",unsafe_allow_html=True)
+        kpi3,kpi4,kpi5=st.columns(3)
+        with kpi3:
+            ## 11월 무슨요일에 사고가 가장 많이 나는지
+            ## 1 일 2 월 .. 7 토
+            df=train.groupby(['월','요일'])['사고유형대분류'].count()
+            top_acc_time=df.loc[month].idxmax()
+            days={1:'일',2:'월',3:'화',4:'수',5:'목',6:'금',7:'토'}
+            st.markdown("<h3 style='text-align:center'>최다사고요일</h3>",unsafe_allow_html=True)
+            st.markdown(f"<h4 style='text-align:center;color:red'>{days[top_acc]}요일</h4>",unsafe_allow_html=True)
+        with kpi4:
+            ## 11월 어떤 지역에서 사고가 가장 많이 나는지.
+            df=train.groupby(['월','지역'])['사고유형대분류'].count()
+            top_acc=df.loc[month].idxmax()
+            count=df.loc[month].loc[top_acc]
+            st.markdown("<h3 style='text-align:center'>최다사고지역</h3>",unsafe_allow_html=True)
+            st.markdown(f"<h4 style='text-align:center;color:red;'>{top_acc} <span style='color:rgb(49, 51, 63);'>{count}회</span></h4>",unsafe_allow_html=True)
+        with kpi5:
+            ## 11월 초,중,말에서 사고가 언제 가장 많이 나는지.
+            df=train.groupby(['월','일_bin'])['사고유형대분류'].count()
+            top_acc=df.loc[month].idxmax()
+            count=df.loc[month].loc[top_acc]
+            days_bin={0:'초',1:'중',2:'말'}
+            st.markdown("<h3 style='text-align:center'>최다사고날짜</h3>",unsafe_allow_html=True)
+            st.markdown(f"<h4 style='text-align:center;color:rgb(49, 51, 63);'>{month}월 <span style='color:red;'>{days_bin[top_acc]}</span></h4>",unsafe_allow_html=True)
+            st.markdown(f"<span style='font-size:4px;'>*1일~10일은 초<br>11일~20일은 중<br>21일~30일은 말입니다.</span>",unsafe_allow_html=True)
 
-    # kpi4,kpi5,kpi6,kpi7=st.beta_columns(4)
+        st.markdown(f"<h3>사고다발구역과 법규위반구역</h3>",unsafe_allow_html=True)
+        st.map(mapdata)
+    else:
+        dong=st.selectbox('지역 선택',[i for i in le.classes_])
+        url=f'https://www.google.com/search?q={dong}+날씨'
+        headers={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.69 Safari/537.36'}
+        res = requests.get(url,headers=headers)
+        res.raise_for_status()
+        soup=BeautifulSoup(res.text,'lxml')
 
-    # with kpi4:
-    #     st.markdown("<h2 style='text-align:center'>사망자 수</h2>",unsafe_allow_html=True)
-    #     death=int(result[3].replace(',',''))
+        temp=int(soup.find('span',attrs={'id':'wob_tm'}).text)
+        rain=int(soup.find('span',attrs={'id':'wob_pp'}).text[:-1])
+        hum=int(soup.find('span',attrs={'id':'wob_hm'}).text[:-1])
+        wind=soup.find('span',attrs={'id':'wob_ws'}).text
+        p=re.compile('[0-9]+')
+        wind=int(p.match(wind).group())
 
-    #     if region=='korea':
-    #         if newcase>0:
-    #             st.markdown(f"<h2 style='text-align:center;color:red'>▲ {death}</h2>",unsafe_allow_html=True)
-    #         else:
-    #             st.markdown(f"<h2 style='text-align:center;color:green'>▼ {death}</h2>",unsafe_allow_html=True)
-    #     else:        
-    #         if newcase>0:
-    #             st.markdown(f"<h2 style='text-align:center;color:red'>{death}</h2>",unsafe_allow_html=True)
-    #         else:
-    #             st.markdown(f"<h2 style='text-align:center;color:green'>{death}</h2>",unsafe_allow_html=True)
-    # with kpi5:
-    #     st.markdown("<h2 style='text-align:center'>발생률</h2>",unsafe_allow_html=True)
-    #     percentage=result[4]
-    #     st.markdown(f"<h2 style='text-align:center;color:red;'>{percentage}%</h2>",unsafe_allow_html=True)
-    # with kpi6:
-    #     st.markdown("<h2 style='text-align:center'>지역발생 수</h2>",unsafe_allow_html=True)
-    #     newCcase=int(result[5].replace(',',''))
-    #     st.markdown(f"<h2 style='text-align:center;color:red'>▲ {newCcase}</h2>",unsafe_allow_html=True)
-    # with kpi7:
-    #     st.markdown("<h2 style='text-align:center'>해외유입 수</h2>",unsafe_allow_html=True)
-    #     newFcase=int(result[6].replace(',',''))
-    #     st.markdown(f"<h2 style='text-align:center;color:red'>▲ {newFcase}</h2>",unsafe_allow_html=True)
+        url=f'https://www.google.com/search?q=광진구+해지는시간'
+        res = requests.get(url,headers=headers)
+        res.raise_for_status()
+        soup=BeautifulSoup(res.text,'lxml')
+        time=int(soup.find('div',attrs={'class':'MUxGbd t51gnb lyLwlc lEBKkf'}).text.split(' ')[1].split(':')[0])
+        if 4<time:
+            juya=1
+        else:
+            juya=2
+        conv_dong=le.transform([dong]).item()
+
+        pred=model.predict_proba([[month,day,hour,temp,wind,rain,hum,juya,weekday,conv_dong]])
+        kpi1,kpi2,kpi3=st.columns(3)
+        with kpi1:
+            st.markdown(f"<h2 style='color:red;text-align:center'>차대차</h2>",unsafe_allow_html=True)
+            st.markdown(f"<h3>사고확률 : {pred[0][0]*100}%</h3>",unsafe_allow_html=True)
+        with kpi2:
+            st.markdown(f"<h2 style='color:red;text-align:center'>차대사람</h2>",unsafe_allow_html=True)
+            st.markdown(f"<h3>사고확률 : {pred[0][1]*100}%</h3>",unsafe_allow_html=True)
+        with kpi3:
+            st.markdown(f"<h2 style='color:red;text-align:center'>차량단독</h2>",unsafe_allow_html=True)
+            st.markdown(f"<h3>사고확률 : {pred[0][2]*100}%</h3>",unsafe_allow_html=True)
+        
 if __name__=='__main__':
     main()
-
